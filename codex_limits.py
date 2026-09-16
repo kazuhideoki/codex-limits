@@ -520,7 +520,7 @@ def display_redeemed_value(value: Any) -> str:
 def display_datetime_value(value: Any) -> str:
   parsed = parse_datetime_value(value)
   if parsed is not None:
-    return parsed.astimezone().strftime("%m-%d %H:%M %Z")
+    return parsed.astimezone().strftime("%m-%d (%a) %H:%M %Z")
   return display_value(value)
 
 
