@@ -625,14 +625,18 @@ def percent_number_from_display(value: str) -> float | None:
     return None
 
 
+def filled_bar(percent: float) -> str:
+  filled = round(min(100, max(0, percent)) / 100 * BAR_WIDTH)
+  return f"{'█' * filled}{'░' * (BAR_WIDTH - filled)}"
+
+
 def percent_bar(value: float | None) -> str:
   if value is None:
     return "[????????????????????] unknown"
   percent = min(100.0, max(0.0, value))
   if percent >= 99.5:
     percent = 100.0
-  filled = round((percent / 100) * BAR_WIDTH)
-  return f"[{'#' * filled}{'-' * (BAR_WIDTH - filled)}] {display_percent(percent / 100, ratio=True)}"
+  return f"{filled_bar(percent)}  {display_percent(percent / 100, ratio=True)}"
 
 
 def display_value(value: Any) -> str:
@@ -814,8 +818,7 @@ def history_bar(basis_points: Any) -> str:
   if value is None or not math.isfinite(value):
     return "不明"
   percent = value / 100
-  filled = round(min(100, max(0, percent)) / 100 * BAR_WIDTH)
-  return f"{'█' * filled}{'░' * (BAR_WIDTH - filled)}  {percent:.1f}%"
+  return f"{filled_bar(percent)}  {percent:.1f}%"
 
 
 def history_datetime(value: Any) -> str:
