@@ -12,14 +12,14 @@ import codex_limits
 
 class PercentBarTest(unittest.TestCase):
   def test_treats_values_at_or_below_one_as_percentages(self) -> None:
-    self.assertEqual(codex_limits.percent_bar(0.5), "[--------------------] 0.5%")
-    self.assertEqual(codex_limits.percent_bar(1.0), "[--------------------] 1%")
+    self.assertEqual(codex_limits.percent_bar(0.5), "░░░░░░░░░░░░░░░░░░░░  0.5%")
+    self.assertEqual(codex_limits.percent_bar(1.0), "░░░░░░░░░░░░░░░░░░░░  1%")
 
   def test_normalizes_reset_credit_against_full_period(self) -> None:
     with patch.object(codex_limits, "expiry_days_left", return_value=0.125):
       record = codex_limits.normalize_reset_record({"expires_at": "unused"}, reset_full_days=30)
 
-    self.assertEqual(record["time_left_bar"], "[--------------------] 0.4%")
+    self.assertEqual(record["time_left_bar"], "░░░░░░░░░░░░░░░░░░░░  0.4%")
 
 
 class ResetTimeLeftTest(unittest.TestCase):
@@ -75,14 +75,14 @@ class WeeklyActiveTimeTest(unittest.TestCase):
     records = [
       {
         "limit": "週間利用上限",
-        "window_remaining_bar": "[==========----------] 50%",
+        "window_remaining_bar": "██████████░░░░░░░░░░  50%",
         "reset": "09-08 15:00 JST",
       }
     ]
 
     self.assertEqual(
       codex_limits.window_time_left_rows(records),
-      [("利用時間残り (09-20)", "[==========----------] 50%", "09-08 15:00 JST")],
+      [("利用時間残り (09-20)", "██████████░░░░░░░░░░  50%", "09-08 15:00 JST")],
     )
 
 
@@ -100,7 +100,7 @@ class ResetUrgencyTest(unittest.TestCase):
     record = {
       "status": "available",
       "time_left": "30m",
-      "time_left_bar": "[--------------------] 0.1%",
+      "time_left_bar": "░░░░░░░░░░░░░░░░░░░░  0.1%",
       "issued": "07-01 00:00 JST",
       "expires": "07-31 00:00 JST",
       "redeemed": "no",
