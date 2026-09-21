@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import math
 import re
 import sys
 import unicodedata
@@ -18,6 +20,7 @@ from zoneinfo import ZoneInfo
 DEFAULT_AUTH_PATH = Path("~/.codex/auth.json").expanduser()
 DEFAULT_RESETS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
 DEFAULT_USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
+DEFAULT_HISTORY_URL = "https://chatgpt.com/backend-api/wham/usage/plan_limit_history?days=7"
 DEFAULT_RESET_FULL_DAYS = 30.0
 DEFAULT_TIMEOUT_SECONDS = 20.0
 WEEKLY_WINDOW_SECONDS = 604800
@@ -53,7 +56,7 @@ def account_id_from_auth(auth: dict[str, Any]) -> str | None:
   return account_id if isinstance(account_id, str) and account_id else None
 
 
-def fetch_response(auth_path: Path, url: str, timeout: float, label: str) -> Any:
+def fetch_response(auth_path: Path, url: str, timeout: float, label: str, *, allow_unavailable: bool = False) -> Any:
   auth = load_json(auth_path)
   token = access_token_from_auth(auth)
 
@@ -71,6 +74,8 @@ def fetch_response(auth_path: Path, url: str, timeout: float, label: str) -> Any
     with urllib.request.urlopen(request, timeout=timeout) as response:
       body = response.read().decode("utf-8")
   except urllib.error.HTTPError as error:
+    if allow_unavailable and error.code == 404:
+      return None
     detail = error.read().decode("utf-8", errors="replace")
     raise SystemExit(f"HTTP {error.code} from {label} endpoint: {safe_error(detail)}") from error
   except urllib.error.URLError as error:
@@ -804,9 +809,76 @@ def display_width(value: str) -> int:
   return width
 
 
+def history_bar(basis_points: Any) -> str:
+  value = number_from_value(basis_points)
+  if value is None or not math.isfinite(value):
+    return "不明"
+  percent = value / 100
+  filled = round(min(100, max(0, percent)) / 100 * BAR_WIDTH)
+  return f"{'█' * filled}{'░' * (BAR_WIDTH - filled)}  {percent:.1f}%"
+
+
+def history_datetime(value: Any) -> str:
+  parsed = parse_datetime_value(value)
+  if parsed is None:
+    return "不明"
+  return parsed.astimezone(ACTIVE_TIMEZONE).strftime("%Y/%m/%d %H:%M")
+
+
+def render_history(payload: Any) -> str:
+  lines = ["利用履歴 — 過去7日間"]
+  if payload is None:
+    return "\n".join(lines + ["履歴は未提供です。"])
+  if not isinstance(payload, dict) or not isinstance(payload.get("periods"), list):
+    raise ValueError("Invalid plan history response")
+  if not payload.get("data_as_of"):
+    return "\n".join(lines + ["集計データなし"])
+  states = []
+  if payload.get("approximate", True):
+    states.append("概算")
+  if not payload.get("coverage_complete", False):
+    states.append("一部未集計")
+  lines.append(f"集計: {history_datetime(payload['data_as_of'])} JST" + (" ・ " + " ・ ".join(states) if states else ""))
+  lines.append("各バーは、その期間の使用上限に対する使用率です。")
+  dimensions = {"model": "モデル", "surface": "利用元", "thread_source": "タスクの発生元", "turn_trigger": "ターンの起動契機"}
+  periods = payload["periods"]
+  if any(not isinstance(p, dict) or p.get("window_minutes") not in (300, 10080) for p in periods):
+    raise ValueError("Unsupported plan history period")
+  for minutes, title in ((10080, "週間枠"), (300, "5時間枠")):
+    matching = [p for p in periods if p["window_minutes"] == minutes]
+    matching.sort(key=lambda p: history_datetime(p.get("starts_at")), reverse=True)
+    if not matching:
+      lines.extend(("", f"{title}: 履歴なし"))
+    for period in matching:
+      lines.extend(("", f"{title}  {history_datetime(period.get('starts_at'))} → {history_datetime(period.get('ends_at'))} JST"))
+      lines.append(f"プラン: {display_value(period.get('plan_type'))}" + (" ・ 集計未完了" if not period.get("accounting_complete", False) else ""))
+      groups = period.get("breakdowns") or []
+      if not isinstance(groups, list) or any(not isinstance(g, dict) or not isinstance(g.get("rows"), list) or any(not isinstance(r, dict) for r in g["rows"]) for g in groups):
+        raise ValueError("Invalid plan history breakdown")
+      group_order = {key: index for index, key in enumerate(dimensions)}
+      groups = sorted(groups, key=lambda group: group_order.get(display_value(group.get("dimension")), len(group_order)))
+      labels = [display_value(row.get("key")) for group in groups for row in group["rows"]]
+      width = max([display_width("使用率")] + [display_width(label) for label in labels])
+      def bar_row(label: str, value: Any) -> str:
+        return f"{pad_cell(label, width, right_align=False)}  {history_bar(value)}"
+      lines.append(bar_row("使用率", period.get("used_basis_points")))
+      if not groups:
+        lines.append("内訳なし")
+      for group in groups:
+        dimension = display_value(group.get("dimension"))
+        lines.extend(("", dimensions.get(dimension, dimension)))
+        rows = group["rows"]
+        if not rows:
+          lines.append("内訳なし")
+        for row in rows:
+          lines.append(bar_row(display_value(row.get("key")), row.get("basis_points")))
+  return "\n".join(lines)
+
+
 def main() -> int:
-  if len(sys.argv) > 1:
-    raise SystemExit("coli does not take options")
+  parser = argparse.ArgumentParser(prog="coli", description="Codex の使用量と reset credits を表示します。")
+  parser.add_argument("--history", action="store_true", help="過去7日間の使用枠と内訳をバーで追加表示")
+  args = parser.parse_args()
 
   usage_payload = fetch_response(DEFAULT_AUTH_PATH, DEFAULT_USAGE_URL, DEFAULT_TIMEOUT_SECONDS, "usage limits")
   resets_payload = fetch_response(DEFAULT_AUTH_PATH, DEFAULT_RESETS_URL, DEFAULT_TIMEOUT_SECONDS, "reset credits")
@@ -819,6 +891,13 @@ def main() -> int:
       reset_records,
     )
   )
+  if args.history:
+    try:
+      payload = fetch_response(DEFAULT_AUTH_PATH, DEFAULT_HISTORY_URL, DEFAULT_TIMEOUT_SECONDS, "plan history", allow_unavailable=True)
+      print("\n" + render_history(payload))
+    except (SystemExit, ValueError) as error:
+      print(f"\n履歴の取得に失敗しました: {error}", file=sys.stderr)
+      return 1
   return 0
 
 

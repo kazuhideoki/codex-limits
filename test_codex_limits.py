@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import io
 import unittest
+import urllib.error
 from datetime import datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -109,6 +111,75 @@ class ResetUrgencyTest(unittest.TestCase):
 
     self.assertTrue(row[0].startswith(codex_limits.ANSI_RED))
     self.assertTrue(row[-1].endswith(codex_limits.ANSI_RESET))
+
+
+class HistoryTest(unittest.TestCase):
+  def payload(self):
+    return {
+      "data_as_of": "2026-09-20T00:00:00Z", "approximate": True,
+      "coverage_complete": False,
+      "periods": [{
+        "window_minutes": 10080, "plan_type": "pro",
+        "starts_at": "2026-09-13T00:00:00Z", "ends_at": "2026-09-20T00:00:00Z",
+        "accounting_complete": False, "used_basis_points": 8750,
+        "breakdowns": [{"dimension": "model", "rows": [
+          {"key": "model-a", "basis_points": 6200},
+          {"key": "model-b", "basis_points": 2550},
+        ]}],
+      }],
+    }
+
+  def test_basis_points_preserve_small_unknown_and_over_limit_values(self):
+    self.assertTrue(codex_limits.history_bar(50).endswith("0.5%"))
+    self.assertTrue(codex_limits.history_bar(100).endswith("1.0%"))
+    self.assertTrue(codex_limits.history_bar(12500).endswith("125.0%"))
+    self.assertEqual(codex_limits.history_bar(None), "不明")
+    self.assertEqual(codex_limits.history_bar(float("nan")), "不明")
+    self.assertTrue(codex_limits.history_bar(0).endswith("0.0%"))
+
+  def test_report_keeps_allowance_denominator_and_quality_flags(self):
+    rendered = codex_limits.render_history(self.payload())
+    for text in ["87.5%", "62.0%", "25.5%", "2026/09/20 09:00 JST", "概算", "一部未集計", "集計未完了", "5時間枠: 履歴なし"]:
+      self.assertIn(text, rendered)
+    self.assertNotIn("70.9%", rendered)
+
+  def test_unavailable_empty_and_invalid_are_distinct(self):
+    self.assertIn("未提供", codex_limits.render_history(None))
+    self.assertIn("集計データなし", codex_limits.render_history({"periods": []}))
+    with self.assertRaises(ValueError):
+      codex_limits.render_history({})
+
+  def test_separates_windows_and_sorts_newest_first(self):
+    payload = self.payload()
+    older = dict(payload["periods"][0], starts_at="2026-09-06T00:00:00Z")
+    five = dict(older, window_minutes=300, used_basis_points=None, breakdowns=None)
+    payload["periods"] = [older, five, payload["periods"][0]]
+    rendered = codex_limits.render_history(payload)
+    self.assertLess(rendered.index("週間枠  2026/09/13"), rendered.index("週間枠  2026/09/06"))
+    self.assertIn("5時間枠  2026/09/06", rendered)
+    self.assertIn("不明", rendered)
+    self.assertIn("内訳なし", rendered)
+
+  def test_history_is_opt_in_and_failure_preserves_current_output(self):
+    for args, responses, expected_calls, expected_status in [
+      (["coli"], [{}, {}], 2, 0),
+      (["coli", "--history"], [{}, {}, self.payload()], 3, 0),
+      (["coli", "--history"], [{}, {}, None], 3, 0),
+      (["coli", "--history"], [{}, {}, SystemExit("HTTP 503")], 3, 1),
+    ]:
+      with self.subTest(args=args, status=expected_status), patch("sys.argv", args), patch.object(codex_limits, "fetch_response", side_effect=responses) as fetch, patch("sys.stdout", new_callable=io.StringIO) as out, patch("sys.stderr", new_callable=io.StringIO):
+        self.assertEqual(codex_limits.main(), expected_status)
+        self.assertEqual(fetch.call_count, expected_calls)
+        self.assertIn("Codex limits", out.getvalue())
+
+  def test_only_404_is_unavailable(self):
+    for code in [404, 401, 503]:
+      with self.subTest(code=code), patch.object(codex_limits, "load_json", return_value={"tokens": {"access_token": "test"}}), patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError("https://example.com", code, "error", {}, io.BytesIO(b"error"))):
+        if code == 404:
+          self.assertIsNone(codex_limits.fetch_response(codex_limits.DEFAULT_AUTH_PATH, "https://example.com", 1, "history", allow_unavailable=True))
+        else:
+          with self.assertRaises(SystemExit):
+            codex_limits.fetch_response(codex_limits.DEFAULT_AUTH_PATH, "https://example.com", 1, "history", allow_unavailable=True)
 
 
 if __name__ == "__main__":

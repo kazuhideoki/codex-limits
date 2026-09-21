@@ -23,6 +23,7 @@ dotfilesの `coli` ラッパーは、このghq配置先の `codex_limits.py` を
 
 ```sh
 coli
+coli --history
 ```
 
 terminal 出力では、5時間枠/週間枠のリセットまでの残り時間率、現在の使用量の残量パーセント、reset credit の期限までの残日数をバーで表示します。
@@ -41,7 +42,17 @@ https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
 `codex/usage` は非公開の ChatGPT backend endpoint です。
 `auth.json` の token は出力しません。
 
-引数は受け付けません。認証ファイルの場所は `~/.codex/auth.json` に固定です。
+`--history` を付けると、通常表示の後に過去7日間の使用枠履歴を追加します。
+週間枠・5時間枠を期間ごとに分け、使用率とモデル・利用元・タスクの発生元・ターンの起動契機の内訳をバーで表示します。
+各バーの100%は、その期間の使用上限です。内訳は使用量全体に対する構成比ではありません。
+日時はJSTで表示し、概算・一部未集計・集計未完了・不明な使用率を区別します。
+週間枠は暦週ではなくAPIの期間に従います。5時間枠が返らない場合は「履歴なし」と表示します。
+
+履歴取得先は `https://chatgpt.com/backend-api/wham/usage/plan_limit_history?days=7` です。
+`--history` 指定時だけGETし、404は「未提供」、その他の取得エラーは通常表示を残したうえでエラー終了します。
+履歴はリアルタイムとは限らないため、表示される集計時刻を確認してください。
+
+認証ファイルの場所は `~/.codex/auth.json` に固定です。
 `CODEX_HOME` を変えている環境では、現在の実装はその変更を参照しません。
 
 ## APIと認証情報
