@@ -668,7 +668,10 @@ def normalize_reset_records(records: list[dict[str, Any]], reset_full_days: floa
 def render_terminal(
   usage_records: list[dict[str, str]],
   reset_records: list[dict[str, str]],
+  *,
+  bar_column: int = 0,
 ) -> str:
+  bar_column = max(bar_column, current_bar_column(usage_records, reset_records))
   lines = [
     "Codex limits",
     "",
@@ -676,20 +679,30 @@ def render_terminal(
   ]
 
   if usage_records:
-    lines.extend(render_current_usage_tables(usage_records))
+    lines.extend(render_current_usage_tables(usage_records, bar_column=bar_column))
   else:
     lines.append("No usage limits found.")
 
   lines.extend(("", "Reset credits"))
   if reset_records:
-    lines.extend(render_table(("#", "Status", "Time left", "Bar", "Issued", "Expires"), reset_rows(reset_records)))
+    lines.extend(render_table(("#", "Status", "Time left", "Bar", "Issued", "Expires"), reset_rows(reset_records), bar_index=3, bar_column=bar_column))
   else:
     lines.append("No reset credits found.")
 
   return "\n".join(lines).rstrip()
 
 
-def render_current_usage_tables(records: list[dict[str, str]]) -> list[str]:
+def current_bar_column(usage_records: list[dict[str, str]], reset_records: list[dict[str, str]]) -> int:
+  usage_width = max([3, display_width("Limit")] + [display_width(r["limit"]) for r in usage_records]
+                    + [display_width(row[0]) for row in window_time_left_rows(usage_records)])
+  number_width = max(3, len(str(len(usage_records))))
+  reset_data = reset_rows(reset_records)
+  reset_width = sum(max([3, display_width(header)] + [display_width(row[i]) for row in reset_data])
+                    for i, header in enumerate(("#", "Status", "Time left"))) + 6
+  return max(number_width + usage_width + 4, reset_width)
+
+
+def render_current_usage_tables(records: list[dict[str, str]], *, bar_column: int = 0) -> list[str]:
   time_left_rows = window_time_left_rows(records)
   label_width = max(
     3,
@@ -699,9 +712,9 @@ def render_current_usage_tables(records: list[dict[str, str]]) -> list[str]:
   lines = []
   if time_left_rows:
     window_column_width = 3 + 2 + label_width
-    lines.extend(render_table(("Window", "Time left", "Reset"), color_weekly_bars(time_left_rows, 1), min_widths={0: window_column_width}))
+    lines.extend(render_table(("Window", "Time left", "Reset"), color_weekly_bars(time_left_rows, 1), min_widths={0: window_column_width}, bar_index=1, bar_column=bar_column))
     lines.extend(("", "Usage limits"))
-  lines.extend(render_table(("#", "Limit", "Bar", "Reset"), color_weekly_bars(usage_rows(records), 2), min_widths={1: label_width}))
+  lines.extend(render_table(("#", "Limit", "Bar", "Reset"), color_weekly_bars(usage_rows(records), 2), min_widths={1: label_width}, bar_index=2, bar_column=bar_column))
   return lines
 
 
@@ -772,12 +785,17 @@ def render_table(
   rows: list[tuple[str, ...]],
   *,
   min_widths: dict[int, int] | None = None,
+  bar_index: int | None = None,
+  bar_column: int = 0,
 ) -> list[str]:
   min_widths = min_widths or {}
   widths = [
     max(min_widths.get(column, 3), display_width(headers[column]), *(display_width(row[column]) for row in rows))
     for column in range(len(headers))
   ]
+  if bar_index is not None:
+    start = sum(widths[:bar_index]) + 2 * bar_index
+    widths[bar_index - 1] += max(0, bar_column - start)
   return [
     format_row(headers, widths, right_align_first=headers[0] == "#"),
     format_separator(widths),
@@ -828,7 +846,7 @@ def history_datetime(value: Any) -> str:
   return parsed.astimezone(ACTIVE_TIMEZONE).strftime("%Y/%m/%d %H:%M")
 
 
-def render_history(payload: Any) -> str:
+def render_history(payload: Any, *, bar_column: int = 0) -> str:
   lines = ["利用履歴 — 過去7日間"]
   if payload is None:
     return "\n".join(lines + ["履歴は未提供です。"])
@@ -861,7 +879,7 @@ def render_history(payload: Any) -> str:
       group_order = {key: index for index, key in enumerate(dimensions)}
       groups = sorted(groups, key=lambda group: group_order.get(display_value(group.get("dimension")), len(group_order)))
       labels = [display_value(row.get("key")) for group in groups for row in group["rows"]]
-      width = max([display_width("使用率")] + [display_width(label) for label in labels])
+      width = max([bar_column - 2, display_width("使用率")] + [display_width(label) for label in labels])
       def bar_row(label: str, value: Any) -> str:
         return f"{pad_cell(label, width, right_align=False)}  {history_bar(value)}"
       lines.append(bar_row("使用率", period.get("used_basis_points")))
@@ -888,19 +906,26 @@ def main() -> int:
   usage_records = normalize_usage_records(find_usage_records(usage_payload))
   reset_records = normalize_reset_records(find_reset_credit_records(resets_payload), DEFAULT_RESET_FULL_DAYS)
 
-  print(
-    render_terminal(
-      usage_records,
-      reset_records,
-    )
-  )
+  history = None
+  history_error = None
+  bar_column = current_bar_column(usage_records, reset_records)
   if args.history:
     try:
       payload = fetch_response(DEFAULT_AUTH_PATH, DEFAULT_HISTORY_URL, DEFAULT_TIMEOUT_SECONDS, "plan history", allow_unavailable=True)
-      print("\n" + render_history(payload))
+      history = render_history(payload)
+      for line in history.splitlines():
+        positions = [line.index(symbol) for symbol in ("█", "░") if symbol in line]
+        if positions:
+          bar_column = max(bar_column, display_width(line[:min(positions)]))
+      history = render_history(payload, bar_column=bar_column)
     except (SystemExit, ValueError) as error:
-      print(f"\n履歴の取得に失敗しました: {error}", file=sys.stderr)
-      return 1
+      history_error = error
+  print(render_terminal(usage_records, reset_records, bar_column=bar_column))
+  if history is not None:
+    print("\n" + history)
+  if history_error is not None:
+    print(f"\n履歴の取得に失敗しました: {history_error}", file=sys.stderr)
+    return 1
   return 0
 
 
