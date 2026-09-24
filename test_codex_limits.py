@@ -11,6 +11,19 @@ import codex_limits
 
 
 class PercentBarTest(unittest.TestCase):
+  def test_one_percent_remains_one_percent(self) -> None:
+    payload = {"rate_limit": {"primary_window": {
+      "used_percent": 99, "limit_window_seconds": 604800,
+    }}}
+    record = codex_limits.normalize_usage_record(codex_limits.find_usage_records(payload)[0])
+
+    self.assertEqual(record["remaining"], "1%")
+    self.assertEqual(record["remaining_bar"], "░░░░░░░░░░░░░░░░░░░░  1%")
+
+  def test_fractional_percent_is_not_treated_as_ratio(self) -> None:
+    self.assertEqual(codex_limits.display_percent(0.5), "0.5%")
+    self.assertEqual(codex_limits.display_percent(0.5, ratio=True), "50%")
+
   def test_treats_values_at_or_below_one_as_percentages(self) -> None:
     self.assertEqual(codex_limits.percent_bar(0.5), "░░░░░░░░░░░░░░░░░░░░  0.5%")
     self.assertEqual(codex_limits.percent_bar(1.0), "░░░░░░░░░░░░░░░░░░░░  1%")
