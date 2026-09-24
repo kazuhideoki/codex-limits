@@ -468,7 +468,7 @@ def display_percent(value: Any, *, ratio: bool = False) -> str:
   except (TypeError, ValueError):
     return display_value(value)
 
-  if ratio or 0 <= number <= 1:
+  if ratio:
     number *= 100
   rounded = round(number, 1)
   if rounded.is_integer():
